@@ -1,0 +1,418 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --primary-color: #3366cc;
+    --success-color: #339966;
+    --error-color: #cc3333;
+    --bg-color: #f5f5f5;
+    --card-bg: #ffffff;
+    --text-color: #333333;
+    --border-color: #dddddd;
+    --hover-color: #e8f0fe;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+main {
+    flex: 1;
+}
+
+/* Dropzone */
+.dropzone {
+    background: var(--card-bg);
+    border: 3px dashed var(--border-color);
+    border-radius: 12px;
+    padding: 60px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    margin-bottom: 30px;
+}
+
+.dropzone:hover {
+    border-color: var(--primary-color);
+    background: var(--hover-color);
+}
+
+.dropzone.dragover {
+    border-color: var(--success-color);
+    background: #e8f5e9;
+    transform: scale(1.02);
+}
+
+.dropzone-content {
+    pointer-events: none;
+}
+
+.upload-icon {
+    width: 64px;
+    height: 64px;
+    color: var(--primary-color);
+    margin-bottom: 20px;
+}
+
+.dropzone-text {
+    font-size: 1.3em;
+    font-weight: 600;
+    color: var(--text-color);
+    margin-bottom: 8px;
+}
+
+.dropzone-subtext {
+    color: #666;
+    font-size: 0.95em;
+}
+
+/* Loading */
+.loading {
+    text-align: center;
+    padding: 40px;
+    background: var(--card-bg);
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.loading-subtext {
+    margin-top: 10px;
+    font-size: 0.9em;
+    color: #666;
+    font-style: italic;
+}
+
+.spinner {
+    border: 4px solid var(--border-color);
+    border-top: 4px solid var(--primary-color);
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Results */
+.results {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 30px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Split layout */
+.split-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+    margin-bottom: 30px;
+}
+
+.left-panel,
+.right-panel {
+    min-width: 0; /* Prevents grid blowout */
+}
+
+.left-panel {
+    border-right: 2px solid var(--border-color);
+    padding-right: 30px;
+}
+
+.image-preview {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.image-preview img {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* MediaWiki section */
+.mediawiki-section {
+    margin-bottom: 20px;
+}
+
+.mediawiki-section:first-child {
+    position: sticky;
+    top: 20px;
+}
+
+.mediawiki-section h3 {
+    color: var(--text-color);
+    font-size: 1.3em;
+    margin-bottom: 15px;
+}
+
+.suggested-filename {
+    background: #f0f8ff;
+    border: 2px solid var(--primary-color);
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 10px;
+    font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+    font-size: 0.95em;
+    word-break: break-all;
+}
+
+.filename-loading {
+    color: #666;
+    font-style: italic;
+    text-align: center;
+}
+
+.suggested-filename .filename {
+    color: var(--primary-color);
+    font-weight: 600;
+    font-size: 1.1em;
+    text-align: center;
+    display: block;
+}
+
+.mediawiki-preview {
+    background: #f8f8f8;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.mediawiki-code {
+    padding: 20px;
+    margin: 0;
+    font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+    font-size: 0.85em;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #333;
+    background: #f8f8f8;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.copy-btn {
+    width: 100%;
+    padding: 12px;
+    margin-top: 10px;
+    background: var(--success-color);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.copy-btn:hover {
+    background: #2d7a56;
+    transform: translateY(-1px);
+}
+
+.copy-btn:active {
+    transform: translateY(0);
+}
+
+.copy-btn.copied {
+    background: #666;
+}
+
+.copy-btn.copied::before {
+    content: '✓ ';
+}
+
+.section {
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.section:last-of-type {
+    border-bottom: none;
+}
+
+.section h3 {
+    color: var(--text-color);
+    font-size: 1.1em;
+    margin-bottom: 12px;
+}
+
+.collapsible-header {
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+}
+
+.collapsible-header:hover {
+    color: var(--primary-color);
+}
+
+.toggle-icon {
+    transition: transform 0.3s ease;
+    font-size: 0.8em;
+}
+
+.toggle-icon.expanded {
+    transform: rotate(-180deg);
+}
+
+.info-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 12px 20px;
+    font-size: 0.95em;
+}
+
+.info-label {
+    font-weight: 600;
+    color: #555;
+}
+
+.info-value {
+    color: var(--text-color);
+    word-break: break-word;
+}
+
+.info-empty {
+    color: #999;
+    font-style: italic;
+    grid-column: 1 / -1;
+}
+
+.raw-exif {
+    background: #f8f8f8;
+    padding: 20px;
+    border-radius: 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin-top: 15px;
+}
+
+.raw-exif.collapsed {
+    display: none;
+}
+
+.reset-btn {
+    display: block;
+    width: 100%;
+    padding: 15px;
+    margin-top: 30px;
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1.1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.reset-btn:hover {
+    background: #2557b3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(51, 102, 204, 0.3);
+}
+
+/* Error */
+.error {
+    background: #ffebee;
+    border: 2px solid var(--error-color);
+    color: var(--error-color);
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-weight: 600;
+}
+
+/* Footer */
+footer {
+    text-align: center;
+    padding: 30px 20px;
+    color: #666;
+    font-size: 0.9em;
+}
+
+/* Utility classes */
+.hidden {
+    display: none !important;
+}
+
+/* Responsive */
+@media (max-width: 1400px) {
+    .split-layout {
+        grid-template-columns: 1fr;
+        gap: 30px;
+    }
+
+    .left-panel {
+        border-right: none;
+        border-bottom: 2px solid var(--border-color);
+        padding-right: 0;
+        padding-bottom: 30px;
+    }
+
+    .mediawiki-section {
+        position: static;
+    }
+}
+
+@media (max-width: 768px) {
+    header h1 {
+        font-size: 1.5em;
+    }
+
+    .dropzone {
+        padding: 40px 20px;
+    }
+
+    .upload-icon {
+        width: 48px;
+        height: 48px;
+    }
+
+    .results {
+        padding: 20px;
+    }
+
+    .info-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .info-label {
+        margin-bottom: 4px;
+    }
+
+    .mediawiki-code {
+        font-size: 0.75em;
+    }
+}
