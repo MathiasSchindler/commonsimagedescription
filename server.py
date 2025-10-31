@@ -21,6 +21,14 @@ except ImportError:
     print("Error: Pillow is required. Install with: pip install Pillow")
     exit(1)
 
+try:
+    from SPARQLWrapper import SPARQLWrapper, JSON as SPARQL_JSON
+    SPARQL_AVAILABLE = True
+except ImportError:
+    print("Warning: SPARQLWrapper not installed. Wikidata POI search will be unavailable.")
+    print("Install with: pip install sparqlwrapper")
+    SPARQL_AVAILABLE = False
+
 PORT = 8000
 UPLOAD_DIR = "uploads"
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
@@ -198,7 +206,93 @@ def search_nearby_poi(lat, lon, direction=None):
         }
 
 
-def analyze_image_with_ollama(image_path, exif_data, location_data):
+def query_wikidata_pois(lat, lon, radius_km=1):
+    """Query Wikidata for nearby points of interest using SPARQL."""
+    if not SPARQL_AVAILABLE:
+        return {
+            'places': [],
+            'error': 'SPARQLWrapper not installed',
+            'query': None,
+            'raw_response': None
+        }
+    
+    endpoint_url = "https://query.wikidata.org/sparql"
+    
+    # Build SPARQL query with coordinates
+    # Note: Wikidata uses Point(Longitude Latitude) format
+    query = f"""SELECT ?place ?location ?distance ?placeLabel ?placeDescription ?instanceOfLabel WHERE {{
+    SERVICE wikibase:around {{
+      ?place wdt:P625 ?location .
+      bd:serviceParam wikibase:center "Point({lon} {lat})"^^geo:wktLiteral .
+      bd:serviceParam wikibase:radius "{radius_km}" .
+      bd:serviceParam wikibase:distance ?distance .
+    }}
+    OPTIONAL {{ ?place wdt:P31 ?instanceOf . }}
+    SERVICE wikibase:label {{ bd:serviceParam wikibase:language "[AUTO_LANGUAGE],mul,en". }}
+}} ORDER BY ?distance LIMIT 100"""
+    
+    print(f"=== WIKIDATA SPARQL QUERY ===")
+    print(f"Endpoint: {endpoint_url}")
+    print(f"Coordinates: lat={lat}, lon={lon}, radius={radius_km}km")
+    print(f"Query:\n{query}")
+    
+    try:
+        import sys
+        user_agent = f"WikimediaCommonsImageAnalyzer/1.0 Python/{sys.version_info[0]}.{sys.version_info[1]}"
+        sparql = SPARQLWrapper(endpoint_url, agent=user_agent)
+        sparql.setQuery(query)
+        sparql.setReturnFormat(SPARQL_JSON)
+        
+        results = sparql.query().convert()
+        
+        print(f"=== WIKIDATA RESPONSE ===")
+        print(f"Found {len(results.get('results', {}).get('bindings', []))} results")
+        
+        places = []
+        for result in results.get("results", {}).get("bindings", []):
+            place_uri = result.get("place", {}).get("value", "")
+            place_label = result.get("placeLabel", {}).get("value", "Unknown")
+            place_desc = result.get("placeDescription", {}).get("value", "")
+            instance_of = result.get("instanceOfLabel", {}).get("value", "")
+            distance = float(result.get("distance", {}).get("value", 0))
+            
+            # Extract Wikidata ID from URI (e.g., http://www.wikidata.org/entity/Q123 -> Q123)
+            wikidata_id = place_uri.split('/')[-1] if place_uri else ""
+            
+            places.append({
+                'label': place_label,
+                'description': place_desc,
+                'instance_of': instance_of,
+                'distance_km': round(distance, 3),
+                'distance_m': round(distance * 1000, 1),
+                'wikidata_id': wikidata_id,
+                'wikidata_url': f"https://www.wikidata.org/wiki/{wikidata_id}" if wikidata_id else ""
+            })
+        
+        print(f"Parsed {len(places)} places")
+        if places:
+            print(f"First 3 places: {json.dumps(places[:3], indent=2)}")
+        
+        return {
+            'places': places,
+            'query': query,
+            'raw_response': results,
+            'error': None
+        }
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"=== WIKIDATA QUERY ERROR ===")
+        print(f"Error: {error_msg}")
+        return {
+            'places': [],
+            'query': query,
+            'raw_response': None,
+            'error': error_msg
+        }
+
+
+def analyze_image_with_ollama(image_path, exif_data, location_data, wikidata_places=None):
     """Analyze image using Ollama vision model."""
     print(f"=== OLLAMA VISION ANALYSIS ===")
     
@@ -208,12 +302,7 @@ def analyze_image_with_ollama(image_path, exif_data, location_data):
             image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
         
         # Build context from EXIF and location data
-        context_parts = []
-        
-        # Add date context
-        date_str = exif_data.get('DateTime') or exif_data.get('DateTimeOriginal')
-        if date_str:
-            context_parts.append(f"taken on {date_str}")
+        location_context = ""
         
         # Add location context
         if location_data and location_data.get('data'):
@@ -227,19 +316,48 @@ def analyze_image_with_ollama(image_path, exif_data, location_data):
                 location_parts.append(addr.get('country'))
             
             if location_parts:
-                context_parts.append(f"in {', '.join(location_parts)}")
+                location_context = ', '.join(location_parts)
         
-        # Build prompt
-        context_str = " ".join(context_parts) if context_parts else ""
+        # Build prompt - new approach for integrated description
         prompt = (
-            f"Describe the main subject visible in this image in one concise sentence (maximum 15-20 words). "
-            f"Focus only on the primary subject or feature - what is the main thing shown in the image? "
-            f"Do not describe secondary elements like background, weather, or surroundings unless they are the main focus. "
-            f"Only describe what you can see, do not interpret or add context. "
+            f"Describe what you see in this image in one clear sentence (maximum 25 words). "
+            f"Your description should naturally include the main subject AND the location. "
         )
-        if context_str:
-            prompt += f"Note: This photo was {context_str}. "
-        prompt += "What is the main subject shown in the image?"
+        
+        # Add location context if available
+        if location_context:
+            prompt += f"This photo was taken in {location_context}. "
+        
+        # Add Wikidata places context if available
+        if wikidata_places and len(wikidata_places) > 0:
+            print(f"\n=== Adding Wikidata context to prompt ===")
+            print(f"Number of places: {len(wikidata_places)}")
+            prompt += "\n\nBased on GPS coordinates, these specific places/structures are nearby (ordered by distance):\n"
+            for i, place in enumerate(wikidata_places[:10], 1):  # Top 10 results
+                place_info = f"{i}. {place.get('label', 'Unknown')}"
+                if place.get('instance_of'):
+                    place_info += f" ({place.get('instance_of')})"
+                if place.get('description'):
+                    place_info += f" - {place.get('description')}"
+                place_info += f" [{place.get('distance_m', 0)}m away]"
+                prompt += place_info + "\n"
+                if i <= 3:  # Print first 3 to console
+                    print(f"  {place_info}")
+            prompt += (
+                "\nIMPORTANT: If you recognize any of these specific places in the image, "
+                "include its exact name in your description. For example: 'A Ryanair airplane at Terminal 2 of Berlin Brandenburg Airport' "
+                "rather than just 'A Ryanair airplane at an airport terminal'.\n"
+            )
+            print(f"=== Wikidata context added ===\n")
+        else:
+            print(f"\n=== No Wikidata context available ===")
+            print(f"wikidata_places: {wikidata_places}")
+            print(f"===\n")
+        
+        prompt += (
+            "\n\nProvide a single integrated sentence that describes the subject and location together. "
+            "Do not split this into separate parts - make it one flowing sentence."
+        )
         
         print(f"Prompt: {prompt}")
         
@@ -406,6 +524,13 @@ def suggest_filename(description, date_str, location_data):
                 filename_base = filename_base.replace('-', ' ')
                 # Remove any quotes or extra punctuation
                 filename_base = filename_base.strip('"\'.,!?')
+                # Remove special tokens that sometimes appear in LLM output
+                filename_base = filename_base.replace('end_of_turn>', '')
+                filename_base = filename_base.replace('<end_of_turn>', '')
+                filename_base = filename_base.replace('</s>', '')
+                filename_base = filename_base.replace('<s>', '')
+                # Clean up any extra whitespace
+                filename_base = ' '.join(filename_base.split())
                 print(f"Suggested filename base: {filename_base}")
             
             # Construct final filename with date
@@ -532,6 +657,16 @@ class ImageUploadHandler(http.server.SimpleHTTPRequestHandler):
                 filename = request_data.get('filename')
                 exif_data = request_data.get('exif')
                 location_data = request_data.get('location')
+                wikidata_places = request_data.get('wikidata_places')  # New parameter
+                
+                print(f"\n=== Vision Request Debug ===")
+                print(f"Filename: {filename}")
+                print(f"Has EXIF: {exif_data is not None}")
+                print(f"Has Location: {location_data is not None}")
+                print(f"Has Wikidata Places: {wikidata_places is not None}")
+                if wikidata_places:
+                    print(f"Number of Wikidata places: {len(wikidata_places)}")
+                    print(f"First place: {wikidata_places[0] if wikidata_places else None}")
                 
                 if not filename:
                     self.send_error(400, "No filename provided")
@@ -546,12 +681,15 @@ class ImageUploadHandler(http.server.SimpleHTTPRequestHandler):
                 # Analyze image with Ollama vision model
                 print("\n" + "="*50)
                 print("Starting Ollama vision analysis...")
+                if wikidata_places:
+                    print(f"Including {len(wikidata_places)} Wikidata places in context")
                 print("="*50 + "\n")
                 
                 vision_data = analyze_image_with_ollama(
                     file_path,
                     exif_data,
-                    location_data
+                    location_data,
+                    wikidata_places
                 )
                 
                 # Send response
@@ -560,6 +698,49 @@ class ImageUploadHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps(vision_data, default=str).encode())
+                
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                error_response = {
+                    "success": False,
+                    "error": str(e)
+                }
+                self.wfile.write(json.dumps(error_response).encode())
+        
+        elif self.path == '/wikidata-pois':
+            # Handle Wikidata POI query request
+            try:
+                content_length = int(self.headers['Content-Length'])
+                body = self.rfile.read(content_length)
+                request_data = json.loads(body.decode())
+                
+                lat = request_data.get('lat')
+                lon = request_data.get('lon')
+                radius = request_data.get('radius', 1)  # Default 1km
+                
+                if lat is None or lon is None:
+                    self.send_error(400, "Missing lat or lon coordinates")
+                    return
+                
+                print(f"\n=== Wikidata POI Query Request ===")
+                print(f"Coordinates: {lat}, {lon}")
+                print(f"Radius: {radius}km")
+                
+                wikidata_result = query_wikidata_pois(lat, lon, radius)
+                
+                response = {
+                    "success": True,
+                    "wikidata": wikidata_result
+                }
+                
+                # Send response
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(response, default=str).encode())
                 
             except Exception as e:
                 self.send_response(500)
@@ -602,7 +783,10 @@ class ImageUploadHandler(http.server.SimpleHTTPRequestHandler):
                             # Extract filename from headers
                             for line in headers_str.split('\n'):
                                 if 'filename=' in line:
-                                    filename = line.split('filename=')[1].strip('"').strip("'")
+                                    # Extract filename and remove quotes properly
+                                    filename_part = line.split('filename=')[1]
+                                    # Remove leading/trailing whitespace and quotes
+                                    filename = filename_part.strip().strip('"').strip("'").strip()
                                     break
                             
                             # Remove trailing boundary markers
@@ -611,6 +795,9 @@ class ImageUploadHandler(http.server.SimpleHTTPRequestHandler):
                 if not image_data or not filename:
                     self.send_error(400, "No image file provided")
                     return
+                
+                # Clean the filename - remove any quotes or special characters that might cause issues
+                filename = filename.replace('"', '').replace("'", '').replace('\n', '').replace('\r', '')
                 
                 # Save the uploaded image
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

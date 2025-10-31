@@ -118,8 +118,14 @@ async function handleFile(file) {
             // Display results immediately with EXIF and location data
             displayResults(file, data.exif, data.location, data.pois, data.camera_direction, null);
             
-            // Start vision analysis in background
-            updateVisionAnalysis(data.filename, data.exif, data.location);
+            // Query Wikidata first if GPS coordinates available, then start vision analysis
+            if (data.exif && data.exif.GPSLatitude && data.exif.GPSLongitude) {
+                // Query Wikidata and pass results to vision analysis
+                queryWikidataAndAnalyze(data.filename, data.exif, data.location);
+            } else {
+                // No GPS data, start vision analysis without Wikidata context
+                updateVisionAnalysis(data.filename, data.exif, data.location, null);
+            }
         } else {
             showError(data.error || 'Failed to process image');
         }
@@ -128,12 +134,58 @@ async function handleFile(file) {
     }
 }
 
+// Query Wikidata first, then start vision analysis with context
+async function queryWikidataAndAnalyze(filename, exif, location) {
+    const visionInfo = document.getElementById('visionInfo');
+    
+    // Show loading state
+    visionInfo.innerHTML = '<div class="info-empty">🌐 Querying Wikidata for nearby places...</div>';
+    
+    try {
+        // Query Wikidata
+        const response = await fetch('/wikidata-pois', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                lat: exif.GPSLatitude,
+                lon: exif.GPSLongitude,
+                radius: 1
+            })
+        });
+        
+        const data = await response.json();
+        let wikidataPlaces = null;
+        
+        if (data.success && data.wikidata && data.wikidata.places) {
+            wikidataPlaces = data.wikidata.places;
+            console.log(`Found ${wikidataPlaces.length} Wikidata places, passing to vision model`);
+            
+            // Update the debug section
+            updateWikidataDisplay(data.wikidata);
+        }
+        
+        // Now start vision analysis with Wikidata context
+        visionInfo.innerHTML = '<div class="info-empty">🤖 Analyzing image with AI vision model...</div>';
+        updateVisionAnalysis(filename, exif, location, wikidataPlaces);
+        
+    } catch (error) {
+        console.error('Wikidata query failed, continuing without context:', error);
+        // Continue with vision analysis even if Wikidata fails
+        visionInfo.innerHTML = '<div class="info-empty">🤖 Analyzing image with AI vision model...</div>';
+        updateVisionAnalysis(filename, exif, location, null);
+    }
+}
+
 // Request vision analysis separately
-async function updateVisionAnalysis(filename, exif, location) {
+async function updateVisionAnalysis(filename, exif, location, wikidataPlaces) {
     const visionInfo = document.getElementById('visionInfo');
     
     // Show loading state in vision section
-    visionInfo.innerHTML = '<div class="info-empty">🤖 Analyzing image with AI vision model...</div>';
+    if (!wikidataPlaces) {
+        visionInfo.innerHTML = '<div class="info-empty">🤖 Analyzing image with AI vision model...</div>';
+    }
     
     try {
         const response = await fetch('/upload/vision', {
@@ -144,7 +196,8 @@ async function updateVisionAnalysis(filename, exif, location) {
             body: JSON.stringify({
                 filename: filename,
                 exif: exif,
-                location: location
+                location: location,
+                wikidata_places: wikidataPlaces
             })
         });
 
@@ -167,39 +220,16 @@ async function updateVisionAnalysis(filename, exif, location) {
         
         displaySection(visionInfo, visionDisplayData);
         
-        // Build context string for translation
-        let contextForTranslation = '';
-        if (currentData.location && currentData.location.data) {
-            const loc = currentData.location.data;
-            const addr = loc.address || {};
-            
-            const locationParts = [];
-            if (addr.road) locationParts.push(addr.road);
-            if (addr.suburb || addr.neighbourhood) locationParts.push(addr.suburb || addr.neighbourhood);
-            if (addr.city || addr.town || addr.village) locationParts.push(addr.city || addr.town || addr.village);
-            if (addr.country) locationParts.push(addr.country);
-            
-            if (locationParts.length > 0) {
-                contextForTranslation = `taken in ${locationParts.join(', ')}`;
-                
-                // Add direction if available
-                if (currentData.camera_direction !== null && currentData.camera_direction !== undefined) {
-                    const cardinalDir = getCardinalDirection(currentData.camera_direction).split(' (')[0];
-                    contextForTranslation += `, facing ${cardinalDir}`;
-                }
-            }
-        }
-        
-        // Start translations with context
+        // Start translations (now the description includes location)
         if (visionData && visionData.description) {
-            requestTranslations(visionData.description, contextForTranslation);
+            requestTranslations(visionData.description);
             
             // Also request filename suggestion (last step)
             requestFilenameSuggestion(visionData.description);
         }
         
         // Regenerate MediaWiki template with vision data
-        generateMediaWikiTemplate(
+        generateMediaWikiTemplateEditable(
             currentData.file,
             currentData.exif,
             currentData.location,
@@ -238,12 +268,12 @@ function updateApiDebugInfo() {
 }
 
 // Request translations for multiple languages
-async function requestTranslations(text, contextStr) {
+async function requestTranslations(text) {
     const languages = ['German', 'Portuguese', 'Hebrew'];
     
     console.log('Starting translations...');
     
-    // First translate the main description
+    // Translate the description (which now includes location)
     for (const lang of languages) {
         try {
             const response = await fetch('/translate', {
@@ -261,47 +291,17 @@ async function requestTranslations(text, contextStr) {
             
             if (data.success && data.translation) {
                 translations[lang.toLowerCase()] = {
-                    description: data.translation,
-                    context: null
+                    description: data.translation
                 };
-                console.log(`${lang} description received:`, data.translation);
+                console.log(`${lang} translation received:`, data.translation);
             }
         } catch (error) {
-            console.error(`Failed to translate description to ${lang}:`, error);
-        }
-    }
-    
-    // Then translate the context string if available
-    if (contextStr) {
-        for (const lang of languages) {
-            try {
-                const response = await fetch('/translate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        text: contextStr,
-                        language: lang
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success && data.translation) {
-                    if (translations[lang.toLowerCase()]) {
-                        translations[lang.toLowerCase()].context = data.translation;
-                    }
-                    console.log(`${lang} context received:`, data.translation);
-                }
-            } catch (error) {
-                console.error(`Failed to translate context to ${lang}:`, error);
-            }
+            console.error(`Failed to translate to ${lang}:`, error);
         }
     }
     
     // Regenerate template after all translations
-    generateMediaWikiTemplate(
+    generateMediaWikiTemplateEditable(
         currentData.file,
         currentData.exif,
         currentData.location,
@@ -353,6 +353,80 @@ async function requestFilenameSuggestion(description) {
     } catch (error) {
         console.error('Failed to get filename suggestion:', error);
         filenameEl.innerHTML = '<div class="filename-loading">Failed to generate filename</div>';
+    }
+}
+
+// Update Wikidata display section
+function updateWikidataDisplay(wikidata) {
+    const wikidataSection = document.getElementById('wikidataPois');
+    
+    let output = '';
+    
+    if (wikidata.error) {
+        output = `Error: ${wikidata.error}\n\n`;
+    }
+    
+    if (wikidata.places && wikidata.places.length > 0) {
+        output += `Found ${wikidata.places.length} places within 1km:\n\n`;
+        
+        wikidata.places.forEach((place, idx) => {
+            output += `${idx + 1}. ${place.label}`;
+            if (place.instance_of) {
+                output += ` (${place.instance_of})`;
+            }
+            output += `\n   Distance: ${place.distance_m}m`;
+            if (place.description) {
+                output += `\n   Description: ${place.description}`;
+            }
+            output += `\n   Wikidata: ${place.wikidata_url}`;
+            output += `\n\n`;
+        });
+    } else {
+        output += 'No places found in Wikidata within the specified radius.\n\n';
+    }
+    
+    if (wikidata.query) {
+        output += '\n--- SPARQL Query ---\n' + wikidata.query + '\n\n';
+    }
+    
+    if (wikidata.raw_response) {
+        output += '\n--- Raw Response ---\n' + JSON.stringify(wikidata.raw_response, null, 2);
+    }
+    
+    wikidataSection.textContent = output;
+}
+
+// Query Wikidata for nearby places
+async function queryWikidataPois(lat, lon, radius = 1) {
+    const wikidataSection = document.getElementById('wikidataPois');
+    
+    // Show loading state
+    wikidataSection.innerHTML = '<div class="info-empty">🌐 Querying Wikidata for nearby places...</div>';
+    
+    try {
+        const response = await fetch('/wikidata-pois', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                lat: lat,
+                lon: lon,
+                radius: radius
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.wikidata) {
+            updateWikidataDisplay(data.wikidata);
+            console.log('Wikidata query complete:', data.wikidata.places?.length || 0, 'places found');
+        } else {
+            wikidataSection.innerHTML = '<div class="info-empty">Failed to query Wikidata</div>';
+        }
+    } catch (error) {
+        console.error('Failed to query Wikidata:', error);
+        wikidataSection.innerHTML = `<div class="info-empty">Error: ${error.message}</div>`;
     }
 }
 
@@ -524,7 +598,7 @@ function displayResults(file, exif, location, pois, cameraDirection, vision) {
     apiDebug.textContent = JSON.stringify(debugInfo, null, 2);
 
     // Generate MediaWiki template
-    generateMediaWikiTemplate(file, exif, location, pois, cameraDirection, vision);
+    generateMediaWikiTemplateEditable(file, exif, location, pois, cameraDirection, vision);
 }
 
 // Helper function to display a section
@@ -621,25 +695,11 @@ function generateMediaWikiTemplate(file, exif, location, pois, cameraDirection, 
     // Build description based on available data
     let descriptionEn = '';
     
-    // Use AI vision description as primary content
+    // Use AI vision description as primary content (now includes location)
     if (vision && vision.description) {
         descriptionEn = vision.description;
     } else {
         descriptionEn = 'Photograph';
-    }
-    
-    // Add location context (where photo was taken)
-    let contextStr = '';
-    if (locationStr) {
-        contextStr = ` (taken in ${locationStr}`;
-        
-        // Add camera direction context
-        if (cameraDirection !== null && cameraDirection !== undefined) {
-            const cardinalDir = getCardinalDirection(cameraDirection).split(' (')[0];
-            contextStr += `, facing ${cardinalDir}`;
-        }
-        
-        contextStr += ')';
     }
     
     // Camera info
@@ -648,27 +708,24 @@ function generateMediaWikiTemplate(file, exif, location, pois, cameraDirection, 
     // Build template with multi-language descriptions
     let template = `=={{int:filedesc}}==
 {{Information
-|description={{en|1=${descriptionEn}${contextStr}}}`;
+|description={{en|1=${descriptionEn}}}`;
 
     // Add German translation if available
     if (translations.german && translations.german.description) {
-        const deContext = translations.german.context || contextStr;
         template += `
-{{de|1=${translations.german.description}${deContext ? ' (' + deContext + ')' : ''}}}`;
+{{de|1=${translations.german.description}}}`;
     }
     
     // Add Portuguese translation if available
     if (translations.portuguese && translations.portuguese.description) {
-        const ptContext = translations.portuguese.context || contextStr;
         template += `
-{{pt|1=${translations.portuguese.description}${ptContext ? ' (' + ptContext + ')' : ''}}}`;
+{{pt|1=${translations.portuguese.description}}}`;
     }
     
     // Add Hebrew translation if available
     if (translations.hebrew && translations.hebrew.description) {
-        const heContext = translations.hebrew.context || contextStr;
         template += `
-{{he|1=${translations.hebrew.description}${heContext ? ' (' + heContext + ')' : ''}}}`;
+{{he|1=${translations.hebrew.description}}}`;
     }
     
     template += `
@@ -703,6 +760,317 @@ function generateMediaWikiTemplate(file, exif, location, pois, cameraDirection, 
     }
     
     output.textContent = template;
+}
+
+// Generate MediaWiki template with editable descriptions
+function generateMediaWikiTemplateEditable(file, exif, location, pois, cameraDirection, vision) {
+    const output = document.getElementById('mediawikiOutput');
+    
+    // Extract date
+    let dateStr = exif.DateTime || exif.DateTimeOriginal || '';
+    if (dateStr) {
+        // Convert "2024:11:17 09:03:00" to "2024-11-17 09:03:00"
+        dateStr = dateStr.replace(/:/g, '-').replace(/-(\d{2}:\d{2}:\d{2})/, ' $1');
+    }
+    
+    // Extract location details
+    let locationStr = '';
+    let country = '';
+    let city = '';
+    let state = '';
+    let countryCode = '';
+    
+    if (location && location.data) {
+        const data = location.data;
+        const addr = data.address || {};
+        
+        country = addr.country || '';
+        countryCode = addr.country_code || '';
+        state = addr.state || addr.region || addr.province || '';
+        city = addr.city || addr.town || addr.village || addr.municipality || '';
+        
+        const parts = [];
+        if (addr.road) parts.push(addr.road);
+        if (addr.suburb || addr.neighbourhood) parts.push(addr.suburb || addr.neighbourhood);
+        if (city) parts.push(city);
+        if (state && state !== city) parts.push(state);
+        if (country) parts.push(country);
+        locationStr = parts.join(', ');
+    }
+    
+    // Build description based on available data
+    let descriptionEn = '';
+    
+    // Use AI vision description as primary content (now includes location)
+    if (vision && vision.description) {
+        descriptionEn = vision.description;
+    } else {
+        descriptionEn = 'Photograph';
+    }
+    
+    // Camera info
+    const camera = exif.Make && exif.Model ? `${exif.Make} ${exif.Model}` : '';
+    
+    // Clear previous content and build new editable template
+    output.innerHTML = '';
+    
+    // Build template structure with editable elements
+    const templateParts = [];
+    
+    templateParts.push('=={{int:filedesc}}==\n{{Information\n|description=');
+    
+    // English description (editable)
+    const enContainer = document.createElement('span');
+    enContainer.className = 'template-line';
+    enContainer.innerHTML = '{{en|1=';
+    
+    const enDesc = document.createElement('span');
+    enDesc.className = 'editable-description';
+    enDesc.setAttribute('data-lang', 'en');
+    enDesc.textContent = descriptionEn;
+    enDesc.title = 'Click to edit';
+    enContainer.appendChild(enDesc);
+    enContainer.innerHTML += '}}';
+    
+    output.appendChild(document.createTextNode(templateParts.join('')));
+    output.appendChild(enContainer);
+    output.appendChild(document.createTextNode('\n'));
+    
+    // Add other language translations (also editable)
+    if (translations.german && translations.german.description) {
+        const deContainer = document.createElement('span');
+        deContainer.className = 'template-line';
+        deContainer.innerHTML = '{{de|1=';
+        
+        const deDesc = document.createElement('span');
+        deDesc.className = 'editable-description';
+        deDesc.setAttribute('data-lang', 'de');
+        deDesc.textContent = translations.german.description;
+        deDesc.title = 'Click to edit (will not trigger re-translation)';
+        deContainer.appendChild(deDesc);
+        deContainer.innerHTML += '}}';
+        
+        output.appendChild(deContainer);
+        output.appendChild(document.createTextNode('\n'));
+    }
+    
+    if (translations.portuguese && translations.portuguese.description) {
+        const ptContainer = document.createElement('span');
+        ptContainer.className = 'template-line';
+        ptContainer.innerHTML = '{{pt|1=';
+        
+        const ptDesc = document.createElement('span');
+        ptDesc.className = 'editable-description';
+        ptDesc.setAttribute('data-lang', 'pt');
+        ptDesc.textContent = translations.portuguese.description;
+        ptDesc.title = 'Click to edit (will not trigger re-translation)';
+        ptContainer.appendChild(ptDesc);
+        ptContainer.innerHTML += '}}';
+        
+        output.appendChild(ptContainer);
+        output.appendChild(document.createTextNode('\n'));
+    }
+    
+    if (translations.hebrew && translations.hebrew.description) {
+        const heContainer = document.createElement('span');
+        heContainer.className = 'template-line';
+        heContainer.innerHTML = '{{he|1=';
+        
+        const heDesc = document.createElement('span');
+        heDesc.className = 'editable-description';
+        heDesc.setAttribute('data-lang', 'he');
+        heDesc.textContent = translations.hebrew.description;
+        heDesc.title = 'Click to edit (will not trigger re-translation)';
+        heContainer.appendChild(heDesc);
+        heContainer.innerHTML += '}}';
+        
+        output.appendChild(heContainer);
+        output.appendChild(document.createTextNode('\n'));
+    }
+    
+    // Continue with rest of template
+    let remainingTemplate = `|date=${dateStr || '{{According to Exif data}}'}\n|source={{own}}\n|author=\n|permission=\n|other versions=\n}}`;
+    
+    // Add location template if GPS data available
+    if (exif.GPSLatitude && exif.GPSLongitude) {
+        remainingTemplate += `{{Location|${exif.GPSLatitude.toFixed(8)}|${exif.GPSLongitude.toFixed(8)}`;
+        
+        // Add heading/direction if available
+        if (cameraDirection !== null && cameraDirection !== undefined) {
+            remainingTemplate += `|heading:${cameraDirection.toFixed(1)}`;
+        }
+        
+        remainingTemplate += '}}';
+    }
+    
+    remainingTemplate += '\n\n=={{int:license-header}}==\n{{CC0}}\n\n';
+    
+    // Add categories section
+    remainingTemplate += '[[Category:Uploaded via Commons Image Analyzer]]\n';
+    if (country) {
+        remainingTemplate += `[[Category:${country}]]\n`;
+    }
+    if (city) {
+        remainingTemplate += `[[Category:${city}]]\n`;
+    }
+    
+    output.appendChild(document.createTextNode(remainingTemplate));
+    
+    // Attach click handlers to editable descriptions
+    attachEditHandlers();
+}
+
+// Attach click handlers to make descriptions editable
+function attachEditHandlers() {
+    const editableElements = document.querySelectorAll('.editable-description');
+    
+    editableElements.forEach(element => {
+        element.addEventListener('click', function() {
+            makeEditable(this);
+        });
+    });
+}
+
+// Make a description editable
+function makeEditable(element) {
+    // Don't allow editing if already in edit mode
+    if (element.querySelector('input')) {
+        return;
+    }
+    
+    const lang = element.getAttribute('data-lang');
+    const originalText = element.textContent;
+    
+    // Create input field
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'description-editor';
+    input.value = originalText;
+    
+    // Create save/cancel buttons
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'edit-buttons';
+    
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = '✓ Save';
+    saveBtn.className = 'save-btn';
+    
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '✗ Cancel';
+    cancelBtn.className = 'cancel-btn';
+    
+    buttonContainer.appendChild(saveBtn);
+    buttonContainer.appendChild(cancelBtn);
+    
+    // Replace content with editor
+    element.innerHTML = '';
+    element.appendChild(input);
+    element.appendChild(buttonContainer);
+    element.classList.add('editing');
+    
+    // Focus input and select all
+    input.focus();
+    input.select();
+    
+    // Save handler
+    const save = async () => {
+        const newText = input.value.trim();
+        if (newText && newText !== originalText) {
+            // Update the text
+            element.textContent = newText;
+            element.classList.remove('editing');
+            
+            // If editing English, trigger re-translation
+            if (lang === 'en') {
+                await retranslateFromEnglish(newText);
+            }
+        } else {
+            // Cancel if empty or unchanged
+            element.textContent = originalText;
+            element.classList.remove('editing');
+        }
+    };
+    
+    // Cancel handler
+    const cancel = () => {
+        element.textContent = originalText;
+        element.classList.remove('editing');
+    };
+    
+    // Event listeners
+    saveBtn.addEventListener('click', save);
+    cancelBtn.addEventListener('click', cancel);
+    
+    // Save on Enter, cancel on Escape
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            save();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            cancel();
+        }
+    });
+}
+
+// Re-translate all languages when English is edited
+async function retranslateFromEnglish(newEnglishText) {
+    console.log('Re-translating from updated English text:', newEnglishText);
+    
+    // Update vision description in current data
+    if (currentData.vision) {
+        currentData.vision.description = newEnglishText;
+    }
+    
+    // Show loading indicator
+    const output = document.getElementById('mediawikiOutput');
+    const editableDescs = output.querySelectorAll('.editable-description:not([data-lang="en"])');
+    editableDescs.forEach(desc => {
+        desc.style.opacity = '0.5';
+        desc.title = 'Re-translating...';
+    });
+    
+    // Clear old translations
+    translations = {};
+    
+    // Re-translate to all languages (text now includes location)
+    const languages = ['German', 'Portuguese', 'Hebrew'];
+    
+    for (const lang of languages) {
+        try {
+            const response = await fetch('/translate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    text: newEnglishText,
+                    language: lang
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success && data.translation) {
+                translations[lang.toLowerCase()] = {
+                    description: data.translation
+                };
+                console.log(`${lang} re-translated:`, data.translation);
+            }
+        } catch (error) {
+            console.error(`Failed to re-translate to ${lang}:`, error);
+        }
+    }
+    
+    // Regenerate the template with new translations
+    generateMediaWikiTemplateEditable(
+        currentData.file,
+        currentData.exif,
+        currentData.location,
+        currentData.pois,
+        currentData.camera_direction,
+        currentData.vision
+    );
 }
 
 // Get orientation description
@@ -751,6 +1119,13 @@ function resetUI() {
     fileInput.value = '';
     translations = {}; // Clear translations
     suggestedFilename = null; // Clear filename
+    
+    // Reset filename display to loading state
+    const filenameEl = document.getElementById('suggestedFilename');
+    if (filenameEl) {
+        filenameEl.innerHTML = '<div class="filename-loading">Waiting for image analysis...</div>';
+    }
+    
     hideAll();
     dropzone.classList.remove('hidden');
 }

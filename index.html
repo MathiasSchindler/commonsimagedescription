@@ -78,6 +78,14 @@
                         </div>
 
                         <div class="section collapsible">
+                            <h3 class="collapsible-header" onclick="toggleSection('wikidataPois')">
+                                🌐 Wikidata Places (Debug) 
+                                <span class="toggle-icon">▼</span>
+                            </h3>
+                            <div id="wikidataPois" class="raw-exif collapsed"></div>
+                        </div>
+
+                        <div class="section collapsible">
                             <h3 class="collapsible-header" onclick="toggleSection('apiDebug')">
                                 🔍 API Debug Info 
                                 <span class="toggle-icon">▼</span>
@@ -96,7 +104,7 @@
                         </div>
                         
                         <div class="mediawiki-section">
-                            <h3>MediaWiki Template</h3>
+                            <h3 title="💡 Click on any highlighted description to edit it. Changes to English will automatically re-translate to other languages.">MediaWiki Template</h3>
                             <div class="mediawiki-preview">
                                 <pre id="mediawikiOutput" class="mediawiki-code"></pre>
                             </div>
